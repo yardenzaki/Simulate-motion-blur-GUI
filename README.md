@@ -12,6 +12,6 @@ How does it work?
 4. Render the corresponding image motion based on the results.
 
 
-Dependencies:
-* import psd_syn
-* from tompy import enter_float, signal_stats, WriteData2
+The results is a video with the simulated motion blur.
+
+![img_1.png](img_1.png)

@@ -8,6 +8,10 @@ How does it work?
 3. Converting it to time history equivalent tilts [rad vs. time].
 4. Render the corresponding image motion based on the results.
 
+** V01 - 06/07/22 What's new?
+    1. Algorithm improvement: Sampling first DX , DY in "exposure time" based on CDF matching and not in a pure random - leads to non-zero correlation between DX , DY
+    2. Post Processing: Making animation of PDF , CDF plots of DX,DY for the 50 first frames.
+
 @Author: Yarden Zaki
 @Date: 07/01/2022
 @Version: 1.0
@@ -21,7 +25,7 @@ import cv2
 import os
 from matplotlib.pylab import *
 import psd_syn
-from toms_py import enter_float, signal_stats, WriteData2
+from tompy import enter_float, signal_stats, WriteData2
 
 # determine what OpenCV version we are using
 try:
@@ -37,6 +41,9 @@ import numpy as np
 import tkinter as tk
 import tkinter.messagebox as tkMessageBox
 from scipy.stats import norm
+import scipy.stats as sps
+from statsmodels.distributions.empirical_distribution import ECDF
+import imageio.v2 as imageio
 
 
 def quit(root):
@@ -157,7 +164,8 @@ def read_data():
     plt.savefig('power_spectral_density')
     plt.xscale('log')
     plt.yscale('log')
-    plt.show()
+    # plt.show()
+    plt.close("all")
 
     self.advise(self)
     self.white_noise(self)
@@ -272,6 +280,15 @@ def Natural_Clicked():
         print('Checkbox 1 unselected')
 
 
+def Create_gif(filenames, gifname):
+    frames = [imageio.imread(filename) for filename in filenames]
+    imageio.mimsave(gifname, frames, format='GIF', duration=1)
+
+    # Remove files
+    for filename in set(filenames):
+        os.remove(filename)
+
+
 def PostProcessLoS(LoS_Dct):
     fr = []  # [1,1,1,1,2,2,2,2,3,3,3,3...]
     dx = []
@@ -329,6 +346,17 @@ def PostProcessLoS(LoS_Dct):
     axs[1].set_ylabel("DY [Pixel]")
 
     plt.savefig('LoS Results per Frame')
+
+    # save Data
+    import pandas as pd
+    df = pd.DataFrame()
+    IFOV = ParamsDict["micron_to_pixel"] / ParamsDict["EFL"]
+    df["Frame"] = fr_2
+    df["Avg_LoS_DX (pixel)"] = avgX_lst
+    df["Avg_LoS_DY (pixel)"] = avgY_lst
+    df["Avg_LoS_DX (urad)"] = df["Avg_LoS_DX (pixel)"] * IFOV
+    df["Avg_LoS_DY (urad)"] = df["Avg_LoS_DY (pixel)"] * IFOV
+    df.to_csv("Avg_LoS_Data.csv")
     #####################################################
 
     plt.figure("Hist LoS DX", figsize=(10, 10))
@@ -380,7 +408,86 @@ def PostProcessLoS(LoS_Dct):
 
     plt.savefig('Los_Pixels_Hist_Y')
 
-    plt.show()
+    # plt.show()
+
+    return avgX_lst, avgY_lst
+
+
+def get_fig_from_gauss_dist(dist_DX, dist_DY, samp_from_DX, samp_from_DY):
+    # making probabilities vector probabilities = [0,1] based on DX,DY
+    x_dx = np.linspace(dist_DX.ppf(.00001), dist_DX.ppf(.99999))
+    x_dy = np.linspace(dist_DY.ppf(.00001), dist_DY.ppf(.99999))
+
+    fig, axs = plt.subplots(2, 2, figsize=(10, 8))
+
+    axs[0, 0].plot(x_dy, dist_DY.pdf(x_dy), color='k')
+    axs[0, 0].axvline(samp_from_DY, color='r', ls='--')
+    new_line = '\n'
+    stats_str = f" z ={round(samp_from_DY, 3)} {new_line} PDF(z) ={round(dist_DY.pdf(samp_from_DY), 3)} {new_line} CDF(z) ={round(dist_DY.cdf(samp_from_DY), 3)}"
+    x_lim_00 = axs[0, 0].get_xlim()
+    y_lim = axs[0, 0].get_ylim()
+    axs[0, 0].text(0.85 * x_lim_00[0], 0.8 * y_lim[1], stats_str, bbox=dict(facecolor='blue', alpha=0.1))
+    axs[0, 0].set(
+        title='PDF - DY'
+    )
+
+    axs[0, 1].plot(x_dy, dist_DY.cdf(x_dy))
+    axs[0, 1].axhline(dist_DY.cdf(samp_from_DY), color='r', ls='--')
+    axs[0, 1].set(
+        title='CDF - DY'
+    )
+
+    ############ DX ##########################  :
+    axs[1, 0].plot(x_dx, dist_DX.pdf(x_dx), color='k')
+    axs[1, 0].axvline(samp_from_DX, color='r', ls='--')
+    new_line = '\n'
+    stats_str = f" z ={round(samp_from_DX, 3)} {new_line} PDF(z) ={round(dist_DX.pdf(samp_from_DX), 3)} {new_line} CDF(z) ={round(dist_DX.cdf(samp_from_DX), 3)}"
+    x_lim_10 = axs[1, 0].get_xlim()
+    y_lim = axs[1, 0].get_ylim()
+
+    ## Set X limits to be euqal for the plots:
+    max_x_lim = max(x_lim_00[1], x_lim_10[1])
+    axs[0, 0].set_xlim(-1 * max_x_lim, max_x_lim)
+    axs[0, 1].set_xlim(-1 * max_x_lim, max_x_lim)
+    axs[1, 0].set_xlim(-1 * max_x_lim, max_x_lim)
+    axs[1, 1].set_xlim(-1 * max_x_lim, max_x_lim)
+
+    # retake
+    x_lim_10 = axs[1, 0].get_xlim()
+    y_lim = axs[1, 0].get_ylim()
+
+    axs[1, 0].text(0.85 * x_lim_10[0], 0.8 * y_lim[1], stats_str, bbox=dict(facecolor='blue', alpha=0.1))
+    axs[1, 0].set(
+        title='PDF - DX'
+    )
+
+    axs[1, 1].plot(x_dx, dist_DX.cdf(x_dx))
+    axs[1, 1].axhline(dist_DY.cdf(samp_from_DX), color='r', ls='--')
+
+    axs[1, 1].set(
+        title='CDF - DX'
+    )
+    return fig
+
+
+def Plot_sample_from_gauss_dist(dist_DX, dist_DY, avgX_lst, avgY_lst):
+    plt.close("all")
+    filenames = []
+    i = 1
+    for samp_from_DX, samp_from_DY in zip(avgX_lst, avgY_lst):
+        fig = get_fig_from_gauss_dist(dist_DX, dist_DY, samp_from_DX, samp_from_DY)
+        filename = f'{i}.png'
+        filenames.append(filename)
+        plt.savefig(filename)
+        plt.close()
+        i = i + 1
+        if i > 50:
+            break
+
+    ####### build gif #########################################
+    gifname = "Show_Sampling.gif"
+    Create_gif(filenames, gifname)
+    return
 
 
 def create_Out_folder():
@@ -644,7 +751,17 @@ def Draw_USAF_Bars(new_frame):
     return frame_with_bars
 
 
-def BlurBasedOnIntTime(new_frame, n_exposure, data_dx, data_dy, startindx, frame_num):
+def Check_corr_between_two_lists(l1, l2):
+    a1 = l1
+    a2 = l2
+
+    print(np.corrcoef(a1, a2))
+
+    return
+
+
+def BlurBasedOnIntTime(new_frame, n_exposure, data_dx, ECDF_data_dx, sorted_data_dx, nn, data_dy, sorted_data_dy,
+                       ECDF_data_dy, frame_num):
     global FF
     x, y, _ = new_frame.shape
     canvas = new_frame.copy()
@@ -672,14 +789,60 @@ def BlurBasedOnIntTime(new_frame, n_exposure, data_dx, data_dy, startindx, frame
 
     LoS_results = []
     ii = 1
+    """
+    Main physics loop - Features Added:
+    1. Matching the CDF of DX and DY to promise correlation between them on high amp. vibrations
+    2.  during "n_exposure" (exposure time) - if the first random sampling is with CDF "Phi" - the next frames will be based on its neighbors in TH
+        (find argwhere of data_dx==samp_from_DX) then arg = arg +1 for consecutive "exposures". DY works with the same logic
+
+    """
     for fr in range(0, n_exposure):  # The detector samples all of the "Analog" Data during the exposure time....
         # vibrating the area around the object: --------------------------------------
-        # Calc the delta movements
-        dx = int(round(float("%.4g" % data_dx[startindx + fr]),
-                       0))  # Currently ROUNDING the dx,dy - think about improvements
-        dy = int(round(float("%.4g" % data_dy[startindx + fr]), 0))
+        # Calc the delta movements -- based on CDF - see C:\Users\E010236\Desktop\Python\LoS_Simulation\roy ayash\plot_dist_python
+        if fr == 0:
+            samp_from_DX = np.random.choice(data_dx)  # randomly sampled datapoint from data_dx dist.
+            indx_sampld_DX = np.argwhere(data_dx == samp_from_DX)[0][0]
+        else:
+            try:
+                indx_sampld_DX = indx_sampld_DX + 1
+                samp_from_DX = data_dx[indx_sampld_DX]
+            except IndexError:
+                indx_sampld_DX = indx_sampld_DX - 1
+                samp_from_DX = data_dx[indx_sampld_DX]
+
+        CDF = round(ECDF_data_dx(samp_from_DX), 3)  # calculating the CDF of this data point
+        # sampling from SORT (SORTED DY) based on the calculated CDF
+        if fr == 0:
+            try:
+                samp_from_DY = sorted_data_dy[int(nn * CDF)]
+                indx_sampld_DY = np.argwhere(data_dy == samp_from_DY)[0][0]
+            except IndexError:
+                if CDF > 0.5:
+                    CDF = CDF - 0.01
+                else:
+                    CDF = CDF + 0.01
+                samp_from_DY = sorted_data_dy[int(nn * CDF)]
+                indx_sampld_DY = np.argwhere(data_dy == samp_from_DY)[0][0]
+
+        else:
+            try:
+                indx_sampld_DY = indx_sampld_DY + 1
+                samp_from_DY = data_dy[indx_sampld_DY]
+            except IndexError:
+                indx_sampld_DY = indx_sampld_DY - 1
+                samp_from_DY = data_dy[indx_sampld_DY]
+
+        # # for validation only:  - MUST TO UNCOMMENT
+        # c1 = CDF
+        # ECDF_data_dy = ECDF(sorted_data_dy)
+        # c2 = round(ECDF_data_dy(samp_from_DY), 3)
+        # print("EQUAL CDFS",c1==c2)
+        # ####---------------------------------------
+
+        dx = int(round(float("%.4g" % samp_from_DX), 0))  # Currently ROUNDING the dx,dy - think about improvements
+        dy = int(round(float("%.4g" % samp_from_DY), 0))
         if LoS_on_detector_cb:
-            LoS_results.append([ii, "%.4g" % data_dx[startindx + fr], "%.4g" % data_dy[startindx + fr]])
+            LoS_results.append([ii, "%.4g" % samp_from_DX, "%.4g" % samp_from_DY])
 
         # print("counting...", ii , " / " , n_exposure)
         ii = ii + 1
@@ -702,6 +865,10 @@ def BlurBasedOnIntTime(new_frame, n_exposure, data_dx, data_dy, startindx, frame
         # cv2.imshow("tmp_frame", tmp_frame)
 
         if fr == 0:
+            new_line = "\n"
+            to_print = f" sampled DX , DY : {dx} {dy} {new_line} CDF of sampled  DX ,DY: {CDF} {new_line}"
+            print(to_print)
+
             # initializing out frame
             BlurredOutFrame = tmp_frame.copy()
 
@@ -727,6 +894,7 @@ def BlurBasedOnIntTime(new_frame, n_exposure, data_dx, data_dy, startindx, frame
             vidWriter.write(BlurredOutFrame)
 
             cv2.waitKey(5)
+
     # Adding Los results to LoS_Dict.
     LoS_Dct[str(frame_num)] = LoS_results
 
@@ -795,6 +963,13 @@ def create_blured_frame(sample_rate_of_input, dur, input_dx, input_dy):
     data_dx = input_dx * ExagFactor
     data_dy = input_dy * ExagFactor
 
+    # Empirical CDF of DX - our real array is not pure gaussian. - CONSIDER DO IT ONCE OUT OF LOOP
+    ECDF_data_dx = ECDF(data_dx)
+    ECDF_data_dy = ECDF(data_dy)
+    nn = len(data_dy)
+    sorted_data_dy = sorted(data_dy)
+    sorted_data_dx = sorted(data_dx)
+
     ii = 1
     new_frame, DataFrame = create_USAF_frame()
 
@@ -809,9 +984,9 @@ def create_blured_frame(sample_rate_of_input, dur, input_dx, input_dy):
         if True:
             print("Number of Sub-Frames during the int Time: ", n_exposure)
             # Blurring Based on exposure time (physical method)
-            startindx = int(fr * SamplingIncrement)
-            # print("startindx",startindx)
-            BlurResults = BlurBasedOnIntTime(new_frame, n_exposure, data_dx, data_dy, startindx, k)
+
+            BlurResults = BlurBasedOnIntTime(new_frame, n_exposure, data_dx, ECDF_data_dx, sorted_data_dx, nn, data_dy,
+                                             sorted_data_dy, ECDF_data_dy, k)
             OutFrame, BGRoutframe = BlurResults[0], BlurResults[1]
             OutFrame = cv2.cvtColor(OutFrame, cv2.COLOR_GRAY2BGR)
             if PSNR_cb:
@@ -1016,10 +1191,23 @@ def SimulateLoS():
 
         ############ END TEMPPPPPPPPPPPPPPPPP
 
+    # Check_corr_between_two_lists(TH_dx_detector_pix, TH_dy_detector_pix)
+    # exit()
+
     print(ParamsDict)
+
+    # getting data_dx , data_dy stats
+    mu1, sigma1 = np.mean(TH_dx_detector_pix), np.std(TH_dx_detector_pix)  # DX stats:
+    mu2, sigma2 = np.mean(TH_dy_detector_pix), np.std(TH_dy_detector_pix)  # DY stats:
+
+    # Making a perfect normal distribuitions with DX,DY stats:
+    Gauss_dist_DX = sps.norm(loc=mu1, scale=sigma1)
+    Gauss_dist_DY = sps.norm(loc=mu2, scale=sigma2)
+
     create_blured_frame(sr_DX, dur, TH_dx_detector_pix, TH_dy_detector_pix)
     if LoS_on_detector_cb:
-        PostProcessLoS(LoS_Dct)
+        avgX_lst, avgY_lst = PostProcessLoS(LoS_Dct)
+        Plot_sample_from_gauss_dist(Gauss_dist_DX, Gauss_dist_DY, avgX_lst, avgY_lst)
 
 
 #########################################-------------------------------------------------------------------------
